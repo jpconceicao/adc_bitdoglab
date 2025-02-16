@@ -1,35 +1,35 @@
 /*
 * Feito por: Jorge Palma
-* Data: 03/02/2025
+* Data: 16/02/2025
 */
-
 
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
-#include "hardware/pio.h"
+#include "hardware/adc.h"
 #include "hardware/timer.h"
 #include "hardware/clocks.h"
 #include "hardware/uart.h"
+#include "hardware/pwm.h"
 
 #include "include/ssd1306.h"
 #include "include/font.h"
 
-#include "include/vetores_numeros.h"
-#include "include/matriz_led_control.h"
 
 // I2C defines
 #define I2C_PORT i2c1
 #define I2C_SDA 14
 #define I2C_SCL 15
-#define endereco 0x3C
-ssd1306_t ssd;
+#define ENDERECO 0x3C
+#define SCREEN_WIDTH WIDTH
+#define SCREEN_HEIGHT HEIGHT
+#define LADO_QUADRADO 8
 
-// por padrão stdout é `uart0`
-#define UART_ID uart0
-#define BAUD_RATE 115200
-#define UART_TX_PIN 0
-#define UART_RX_PIN 1
+#define CENTRO_X 2131
+#define CENTRO_Y 1990
+#define ZONA_OFF 45
+
+ssd1306_t ssd;
 
 // LED RGB Defines
 #define RED_LED_RGB 13
@@ -38,77 +38,88 @@ ssd1306_t ssd;
 
 // Definições para os botões
 #define BOTAO_A 5
-#define BOTAO_B 6
+#define BOTAO_JOYSTIC 22
 static volatile uint32_t ultimo_tempo = 0;
 
-// Definições para a matriz de leds RGB
-#define OUT_PIN 7
-pio_t meu_pio = {
-    .pio = pio0,       
-    .ok = false,       
-    .i = 0,              
-    .r = 0.0,          
-    .g = 0.0,          
-    .b = 0.0, 
-    .sm = 0          
-};
+// PWM
+#define WRAP 65535
+#define DI_DF 4.0
 
-char input;
+// Joystic
+#define JOY_X 27  // ADC1
+#define JOY_Y 26  // ADC0
+uint16_t leitura_joy_x; 
+uint16_t leitura_joy_y;
+
+// Variáveis de controle
+volatile bool leds_azul_vermelho_on = true;
+volatile uint8_t borda = 1;
+uint16_t posicao_x = SCREEN_WIDTH / 2 - LADO_QUADRADO / 2;  // Iniciando no meio da tela
+uint16_t posicao_y = SCREEN_HEIGHT / 2 - LADO_QUADRADO / 2;  // Iniciando no meio da tela
+
 
 void setup_gpios();
-void realizar_troca();
+uint16_t ler_adc(uint8_t canal);
+void atualizar_posicao_quadrado(uint16_t adc_x, uint16_t adc_y);
+int converter_adc_para_tela(uint16_t centro, uint16_t valor_adc, uint16_t tela_max);
+void atualizar_led_rgb(uint led_pin, uint16_t valor_adc, uint16_t centro);
 static void gpio_irq_handler(uint gpio, uint32_t events);
 
 int main()
 {
-    init_pio_routine(&meu_pio, OUT_PIN);
+    stdio_init_all();
     setup_gpios();
     
-    // Inicializa a UART
-    uart_init(UART_ID, BAUD_RATE);
-
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART); // Configura o pino 0 para TX
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART); // Configura o pino 1 para RX
-
     gpio_set_irq_enabled_with_callback(BOTAO_A, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
-    gpio_set_irq_enabled_with_callback(BOTAO_B, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    gpio_set_irq_enabled_with_callback(BOTAO_JOYSTIC, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
 
-    while (true) {
+    while (true) 
+    {
+        uint16_t adc_x = ler_adc(1);  // Ler o ADC 1 - X
+        uint16_t adc_y = ler_adc(0);
 
-        if (stdio_usb_connected())
-        {
-            if (scanf("%c", &input) == 1)
-            {   
-                ssd1306_fill(&ssd, false);
-                ssd1306_rect(&ssd, 3, 3, 122, 58, true, false);
-                ssd1306_draw_string(&ssd, "Char Recebido:", 8, 10);
-                ssd1306_draw_char(&ssd, input, 60, 30);
-                ssd1306_send_data(&ssd);
+        atualizar_posicao_quadrado(adc_x, adc_y);
 
-                if (input >= '0' && input <= '9')
-                {
-                    realizar_troca(input);
-                }
-            }     
-        }
+        atualizar_led_rgb(RED_LED_RGB, adc_x, CENTRO_X);
+        atualizar_led_rgb(BLUE_LED_RGB, adc_y, CENTRO_Y);
+
+        sleep_ms(40);
     }
+
+    return 0;
 }
 
 void setup_gpios()
 {
-    gpio_init(RED_LED_RGB);                 
-    gpio_set_dir(RED_LED_RGB, GPIO_OUT);  
-    gpio_init(BLUE_LED_RGB);                 
-    gpio_set_dir(BLUE_LED_RGB, GPIO_OUT);
-    gpio_init(GREEN_LED_RGB);                 
-    gpio_set_dir(GREEN_LED_RGB, GPIO_OUT);  
-    
     gpio_init(BOTAO_A);
     gpio_set_dir(BOTAO_A, GPIO_IN);        
     gpio_pull_up(BOTAO_A);
-    gpio_init(BOTAO_B);
-    gpio_set_dir(BOTAO_B, GPIO_IN);        
-    gpio_pull_up(BOTAO_B); 
+    gpio_init(BOTAO_JOYSTIC);
+    gpio_set_dir(BOTAO_JOYSTIC, GPIO_IN);        
+    gpio_pull_up(BOTAO_JOYSTIC);
+
+    gpio_init(GREEN_LED_RGB);                 
+    gpio_set_dir(GREEN_LED_RGB, GPIO_OUT);  
+    gpio_put(GREEN_LED_RGB, 0);  // Iniciando desligado
+    
+    gpio_set_function(BLUE_LED_RGB, GPIO_FUNC_PWM);
+    uint slice = pwm_gpio_to_slice_num(BLUE_LED_RGB);
+    pwm_set_clkdiv(slice, DI_DF);
+    pwm_set_wrap(slice, WRAP);
+    pwm_set_gpio_level(BLUE_LED_RGB, 0);
+    pwm_set_enabled(slice, true);
+
+    gpio_set_function(RED_LED_RGB, GPIO_FUNC_PWM);
+    slice = pwm_gpio_to_slice_num(RED_LED_RGB);
+    pwm_set_clkdiv(slice, 4.0);
+    pwm_set_wrap(slice, 65535);
+    pwm_set_gpio_level(RED_LED_RGB, 0);
+    pwm_set_enabled(slice, true); 
+
+    // ADC
+    adc_init();
+    adc_gpio_init(JOY_X);
+    adc_gpio_init(JOY_Y);
 
     // I2C Initialisation. Using it at 400Khz.
     i2c_init(I2C_PORT, 400*1000);
@@ -118,61 +129,97 @@ void setup_gpios()
     gpio_pull_up(I2C_SDA);
     gpio_pull_up(I2C_SCL);
 
-    ssd1306_init(&ssd, WIDTH, HEIGHT, false, endereco, I2C_PORT); // Inicializa o display
+    ssd1306_init(&ssd, SCREEN_WIDTH, SCREEN_HEIGHT, false, ENDERECO, I2C_PORT); // Inicializa o display
     ssd1306_config(&ssd); // Configura o display
     ssd1306_send_data(&ssd); // Envia os dados para o display
 
     // Limpa o display. O display inicia com todos os pixels apagados.
     ssd1306_fill(&ssd, false);
     ssd1306_send_data(&ssd);
+
+    ssd1306_fill(&ssd, false);
+    ssd1306_rect(&ssd, posicao_y, posicao_x, LADO_QUADRADO, LADO_QUADRADO, true, true);
+    ssd1306_send_data(&ssd);
 }
 
-void realizar_troca()
+uint16_t ler_adc(uint8_t canal)
 {
-    switch(input)
+    adc_select_input(canal);
+    return adc_read();
+}
+
+void atualizar_posicao_quadrado(uint16_t adc_x, uint16_t adc_y)
+{
+    uint16_t tela_maxima_x = SCREEN_WIDTH - LADO_QUADRADO - borda; 
+    uint16_t tela_maxima_y = SCREEN_HEIGHT - LADO_QUADRADO - borda;
+
+    posicao_x = converter_adc_para_tela(CENTRO_X, adc_x, tela_maxima_x);
+    posicao_y = SCREEN_HEIGHT - LADO_QUADRADO - converter_adc_para_tela(CENTRO_Y, adc_y, tela_maxima_y);
+
+    ssd1306_fill(&ssd, false);
+
+    for (int i = 0; i < borda; i++)
     {
-        case '0':
-            desenho_pio(numero_0, &meu_pio);
-            break;
+        ssd1306_hline(&ssd, 0, SCREEN_WIDTH - 1, i, true);
+        ssd1306_hline(&ssd, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 - i, true);
+        ssd1306_vline(&ssd, i, 0, SCREEN_HEIGHT - 1, true);
+        ssd1306_vline(&ssd, SCREEN_WIDTH - 1 - i, 0, SCREEN_HEIGHT - 1, true);
+    }
 
-        case '1':
-            desenho_pio(numero_1, &meu_pio);
-            break;
+    ssd1306_rect(&ssd, posicao_y, posicao_x, LADO_QUADRADO, LADO_QUADRADO, true, true);
+    ssd1306_send_data(&ssd);
+}
 
-        case '2':
-            desenho_pio(numero_2, &meu_pio);
-            break;
-
-        case '3':
-            desenho_pio(numero_3, &meu_pio);
-            break;
-
-        case '4':
-            desenho_pio(numero_4, &meu_pio);
-            break;
-
-        case '5':
-            desenho_pio(numero_5, &meu_pio);
-            break;
-
-        case '6':
-            desenho_pio(numero_6, &meu_pio);
-            break;
-
-        case '7':
-            desenho_pio(numero_7, &meu_pio);
-            break;
-
-        case '8':
-            desenho_pio(numero_8, &meu_pio);
-            break;
-
-        case '9':
-            desenho_pio(numero_9, &meu_pio);
-            break;
+int converter_adc_para_tela(uint16_t centro, uint16_t valor_adc, uint16_t tela_max)
+{
+    uint16_t min = centro;     
+    uint16_t max = 4095 - centro;
     
-        default:
-            break;
+    int offset = valor_adc - centro; 
+
+    int valor;
+    if (offset < 0) {
+        valor = ((offset * (tela_max / 2)) / min) + (tela_max / 2);
+    } else {
+        valor = ((offset * (tela_max / 2)) / max) + (tela_max / 2);
+    }
+
+    if (valor < 0) 
+        valor = 0;
+
+    if (valor > tela_max) 
+        valor = tela_max;
+
+    if (valor < borda)
+        valor = borda;
+
+    return valor;
+}
+
+void atualizar_led_rgb(uint led_pin, uint16_t valor_adc, uint16_t centro)
+{
+    int offset, max;
+    if (!leds_azul_vermelho_on)
+    {
+        pwm_set_gpio_level(led_pin, 0);
+    }
+    else
+    {
+        offset = valor_adc - centro;
+        if (offset > -ZONA_OFF && offset < ZONA_OFF)
+        {
+            pwm_set_gpio_level(led_pin, 0);
+            return;
+        }
+        else
+        {
+            if (offset > 0)
+                max = 4095 - centro;
+            else
+                max = centro;
+            
+            pwm_set_gpio_level(led_pin, ((abs(offset) - ZONA_OFF) * 65535) / (max - ZONA_OFF));
+        }
     }
 }
 
@@ -186,53 +233,19 @@ static void gpio_irq_handler(uint gpio, uint32_t events)
 
         if (gpio == BOTAO_A)
         {
-            bool state = gpio_get(GREEN_LED_RGB);
-            if(state)
-            {
-                gpio_put(GREEN_LED_RGB, !state);
-                printf("Desligando LED VERDE\n");
-                ssd1306_fill(&ssd, false);
-                ssd1306_send_data(&ssd);
-                ssd1306_draw_string(&ssd, " Desligando ", 8, 10);
-                ssd1306_draw_string(&ssd, "LED VERDE", 20, 30);
-                ssd1306_send_data(&ssd);
-            }
-            else
-            {
-                gpio_put(GREEN_LED_RGB, !state);
-                printf("Ligando LED VERDE\n");
-                ssd1306_fill(&ssd, false);
-                ssd1306_send_data(&ssd);
-                ssd1306_draw_string(&ssd, " Ligando ", 8, 10);
-                ssd1306_draw_string(&ssd, "LED VERDE", 20, 30);
-                ssd1306_send_data(&ssd);
-            }
-            
+            leds_azul_vermelho_on = !leds_azul_vermelho_on;
         }
 
-        if (gpio == BOTAO_B)
+        if (gpio == BOTAO_JOYSTIC)
         {
-            bool state = gpio_get(BLUE_LED_RGB);
-
-            if(state)
+            gpio_put(GREEN_LED_RGB, !gpio_get(GREEN_LED_RGB));
+            if (borda == 1)
             {
-                gpio_put(BLUE_LED_RGB, !state);
-                printf("Desligando LED AZUL\n");
-                ssd1306_fill(&ssd, false);
-                ssd1306_send_data(&ssd);
-                ssd1306_draw_string(&ssd, " Desligando ", 8, 10); // Desenha uma string
-                ssd1306_draw_string(&ssd, "LED AZUL", 20, 30); // Desenha uma string
-                ssd1306_send_data(&ssd);
+                borda = 4;
             }
-            else
+            else if (borda == 4)
             {
-                gpio_put(BLUE_LED_RGB, !state);
-                printf("Ligando LED AZUL\n");
-                ssd1306_fill(&ssd, false);
-                ssd1306_send_data(&ssd);
-                ssd1306_draw_string(&ssd, " Ligando ", 8, 10); // Desenha uma string
-                ssd1306_draw_string(&ssd, "LED AZUL", 20, 30); // Desenha uma string
-                ssd1306_send_data(&ssd);
+                borda = 1;
             }
         }
     }
