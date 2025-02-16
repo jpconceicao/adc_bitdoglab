@@ -37,7 +37,6 @@ pico_sdk_init()
 
 add_executable(adc_bitdoglab 
             adc_bitdoglab.c 
-            include/matriz_led_control.c
             include/ssd1306.c
 )
 
@@ -65,10 +64,10 @@ target_include_directories(adc_bitdoglab PRIVATE
 # Add any user requested libraries
 target_link_libraries(adc_bitdoglab 
         hardware_i2c
-        hardware_pio
+        hardware_adc
         hardware_timer
         hardware_clocks
-        
+        hardware_pwm
         )
 
 pico_add_extra_outputs(adc_bitdoglab)
