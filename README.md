@@ -22,7 +22,7 @@ Este projeto utiliza uma Raspberry Pi Pico W na placa BitDogLab para controlar u
 - SCL: GPIO 15
 - Endereço: 0x3C
 
-### LED RGB (PWM)
+### LED RGB
 - Vermelho: GPIO 13
 - Verde: GPIO 11
 - Azul: GPIO 12
